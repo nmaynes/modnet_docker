@@ -1,5 +1,6 @@
 import os
 import sys
+import glob
 import argparse
 import numpy as np
 from PIL import Image
@@ -25,6 +26,28 @@ def remove_background(image, matte):
 
   return Image.fromarray(np.uint8(foreground))
 
+def get_background(path_to_background, image_size=(1440,960)):
+    background = Image.open(path_to_background)
+    if not background.size == image_size:
+        background = background.resize(image_size)
+    return background
+
+def are_images_same_shape(image1, image2):
+    return image1.shape == image2.shape
+
+def combine_images(img1, img2, mask, mode='RGB'):
+    if img1.mode != mode:
+        img1 = img1.convert(mode)
+    if img2.mode != mode:
+        img2 = img2.convert(mode)
+    if mask.mode != 'L':
+        mask = mask.convert('L')
+
+    # Combine the images using the mask
+    comb_img = Image.composite(img1, img2, mask)
+    return comb_img    
+
+
 if __name__ == '__main__':
     # define cmd arguments
     parser = argparse.ArgumentParser()
@@ -43,8 +66,8 @@ if __name__ == '__main__':
     if not os.path.exists(args.ckpt_path):
         print('Cannot find ckpt path: {0}'.format(args.ckpt_path))
         exit()
-
-    # define hyper-parameters
+    
+# define hyper-parameters
     ref_size = 512
 
     # define image to tensor transform
@@ -117,9 +140,30 @@ if __name__ == '__main__':
         matte = matte[0][0].data.cpu().numpy()
         matte_name = im_name.split('.')[0] + '.png'
         foreground_name = im_name.split('.')[0] + '.foreground.png'
-        Image.fromarray(((matte * 255).astype('uint8')), mode='L').save(os.path.join(args.output_path, matte_name))
+        matte_array = Image.fromarray(((matte * 255).astype('uint8')), mode='L')
+        matte_array.save(os.path.join(args.output_path, matte_name))
         print("saved matte")
 
-        foreground = remove_background(Image.open(os.path.join(args.input_path, im_name)), Image.open(os.path.join(args.output_path, matte_name)))
+        foreground = remove_background(Image.open(os.path.join(args.input_path, im_name)), matte_array)
         foreground.save(os.path.join(args.output_path, foreground_name))
         print("saved background")
+
+    foreground_im_names = glob.glob(args.output_path + '/*.foreground.png')
+    mask_im_names = []
+    for im_name in os.listdir(args.output_path):
+        if not im_name.startswith('.') and im_name not in foreground_im_names:
+            mask_im_names.append(os.path.join(args.output_path, im_name.split('.')[0] + '.png'))
+    backgrounds = [os.path.join(args.input_path, 'backgrounds', img_name.split('.')[0] + '.jpeg') for img_name in os.listdir(os.path.join(args.input_path, 'backgrounds'))]
+    img_and_mask = list(zip(foreground_im_names, mask_im_names))
+    print("background files: ", backgrounds)
+    print("img_and_mask_files: ", img_and_mask)
+    for for_img, mask_img in img_and_mask:
+        fg_img = Image.open(for_img)
+        mask = Image.open(mask_img)
+
+        for each_background in backgrounds:
+            out_file_name = for_img.split('.')[0].split('/')[-1] + '_' + each_background.split('.')[0].split('/')[-1] + '.combined.png'
+            bg_img = Image.open(each_background)
+            combined_image = combine_images(fg_img, bg_img, mask)
+            combined_image.save(os.path.join(args.output_path, 'combined_images', out_file_name))
+            print("saved combined image: ", out_file_name)
